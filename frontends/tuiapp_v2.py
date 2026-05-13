@@ -525,25 +525,20 @@ def render_topbar(session_name: str, status: str, model: str, tasks_running: int
 
 def render_bottombar(quit_armed: bool = False) -> Table:
     t = Table.grid(expand=True)
-    t.add_column(ratio=2, justify="left")
-    t.add_column(ratio=1, justify="right")
+    t.add_column(justify="left")
     left = Text()
     if quit_armed:
         left.append("再按 Ctrl+C 退出", style=f"bold {C_GREEN}")
     else:
         pairs = [("Enter", "发送"), ("Ctrl+N", "新会话"),
-                 ("Ctrl+B", "侧栏"), ("Ctrl+C", "停止/退出")]
+                 ("Ctrl+B", "侧栏"), ("Ctrl+C", "停止/退出"),
+                 ("/", "命令面板"), ("Ctrl+/", "快捷键帮助")]
         for i, (k, d) in enumerate(pairs):
             if i: left.append("    ")
-            left.append(k, style=C_FG)
+            left.append(k, style=C_GREEN if k in ("/", "Ctrl+/") else C_FG)
             left.append(" ")
             left.append(d, style=C_MUTED)
-    right = Text()
-    right.append("Ctrl+?", style=C_GREEN)
-    right.append(" 帮助  ", style=C_MUTED)
-    right.append("/", style=C_GREEN)
-    right.append(" 命令面板", style=C_MUTED)
-    t.add_row(left, right)
+    t.add_row(left)
     return t
 
 
@@ -730,9 +725,10 @@ class GenericAgentTUI(App[None]):
         Binding("ctrl+o",     "toggle_fold",   "Fold",  show=False),
         Binding("ctrl+up",    "prev_session",  "Prev",  show=False, priority=True),
         Binding("ctrl+down",  "next_session",  "Next",  show=False, priority=True),
-        # Ctrl+? = Ctrl+Shift+/ — Textual 在不同终端会以 ctrl+? 或 ctrl+question_mark 上报；都绑上以兜底
-        Binding("ctrl+question_mark", "show_help", "Help", show=False),
-        Binding("ctrl+?",     "show_help",      "Help",  show=False),
+        # Ctrl+/ — 终端常报为 ctrl+slash 或 legacy ctrl+_（=ASCII 0x1F），都绑上以兜底
+        Binding("ctrl+slash", "show_help", "Help", show=False),
+        Binding("ctrl+/",     "show_help", "Help", show=False),
+        Binding("ctrl+underscore", "show_help", "Help", show=False),
         Binding("escape",     "escape",        "Close", show=False),
         Binding("tab",        "complete_command", "Complete", show=False, priority=True),
     ]
@@ -1018,14 +1014,14 @@ class GenericAgentTUI(App[None]):
             ("/",                       "唤起命令面板"),
             ("Tab",                     "命令面板可见时补全"),
             ("Esc",                     "取消选择 / 关闭面板 / 关闭帮助"),
-            ("Ctrl+?",                  "显示 / 隐藏本帮助"),
+            ("Ctrl+/",                  "显示 / 隐藏本帮助"),
         ]
         t = Text()
-        t.append("快捷键\n\n", style=f"bold {C_GREEN}")
+        t.append("快捷键帮助\n\n", style=f"bold {C_GREEN}")
         for k, d in rows:
             t.append(f"  {k:<22}", style=C_FG)
             t.append(f"{d}\n", style=C_MUTED)
-        t.append("\n按 Esc 或 Ctrl+? 关闭", style=C_DIM)
+        t.append("\n按 Esc 或 Ctrl+/ 关闭", style=C_DIM)
         return t
 
     def action_complete_command(self) -> None:
