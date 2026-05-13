@@ -33,6 +33,7 @@ try:
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical, VerticalScroll
     from textual.message import Message
+    from textual.screen import ModalScreen
     from textual.widgets import OptionList, Static, TextArea
     from textual.widgets.option_list import Option
 except ModuleNotFoundError as exc:
@@ -611,6 +612,37 @@ def render_sidebar(sessions: dict[int, AgentSession], current_id: Optional[int])
 
 # ---------- App ----------
 
+
+class HelpScreen(ModalScreen):
+    """快捷键帮助 modal — push 上来覆盖主屏幕，Esc / Ctrl+/ 关闭，不影响下层输入框位置。"""
+    CSS = """
+    HelpScreen { align: center middle; }
+    HelpScreen > Static {
+        width: auto;
+        max-width: 80;
+        height: auto;
+        max-height: 80%;
+        background: #21262d;
+        border: solid #30363d;
+        padding: 1 2;
+        color: #c9d1d9;
+    }
+    """
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close", show=False),
+        Binding("ctrl+slash", "dismiss", "Close", show=False),
+        Binding("ctrl+/", "dismiss", "Close", show=False),
+        Binding("ctrl+underscore", "dismiss", "Close", show=False),
+    ]
+
+    def __init__(self, content) -> None:
+        super().__init__()
+        self._content = content
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._content)
+
+
 class GenericAgentTUI(App[None]):
 
     CSS = """
@@ -704,18 +736,6 @@ class GenericAgentTUI(App[None]):
         scrollbar-size: 0 0;
     }
     #input:focus { border: none; }
-
-    #help {
-        display: none;
-        width: 1fr;
-        height: auto;
-        max-height: 80%;
-        background: #0d1117;
-        border: solid #21262d;
-        padding: 1 2;
-        margin: 0 6;
-    }
-    #help.-visible { display: block; }
     """
 
     BINDINGS = [
@@ -745,7 +765,6 @@ class GenericAgentTUI(App[None]):
         self._resize_timer = None             # 拖拽 resize 80ms 防抖，避免每帧全量重挂载
         self._quit_armed: bool = False        # Ctrl+C 双击退出：第一次按设 True，2s 内再按则真正退出
         self._quit_timer = None               # 配合 _quit_armed 的兜底清除定时器
-        self._help_open: bool = False         # 帮助 overlay 是否打开
 
     def compose(self) -> ComposeResult:
         yield Static("", id="topbar")
@@ -763,7 +782,6 @@ class GenericAgentTUI(App[None]):
                     highlight_cursor_line=False,
                     placeholder="输入指令或问题... (Enter 发送, Ctrl+J 换行, / 唤起命令面板)",
                 )
-        yield Static("", id="help")
         yield Static(render_bottombar(), id="bottombar")
 
     def on_mount(self) -> None:
@@ -887,16 +905,20 @@ class GenericAgentTUI(App[None]):
         self._refresh_all()
 
     def action_handle_ctrl_c(self) -> None:
-        """Ctrl+C 跨场景统一入口：跑任务时中断；输入框有内容时清空；否则 arm-then-quit。
-        与 CC 双击退出协议对齐，避免误触 + 与系统 SIGINT 直觉一致。"""
-        # 1) 任务在跑 → 中断
+        """Ctrl+C 跨场景统一入口：跑任务时中断；否则首次清空输入框 + 武装退出，
+        2s 内再按退出。与 CC 双击退出协议对齐，输入框非空时不会一键退出。"""
+        # 1) 任务在跑 → 中断（不武装退出，避免误关）
         try: sess = self.current
         except Exception: sess = None
         if sess is not None and sess.status == "running":
             self._cmd_stop([])
             self._disarm_quit()
             return
-        # 2) 输入框非空 → 清空（让用户从草稿中断恢复，避免误退出）
+        # 2) 已武装 → 真正退出
+        if self._quit_armed:
+            self.exit()
+            return
+        # 3) 首次按：输入框有内容则清空，无论空满都武装并提示
         try:
             inp = self.query_one("#input", InputArea)
         except Exception:
@@ -905,13 +927,6 @@ class GenericAgentTUI(App[None]):
             inp.reset()
             try: self._resize_input(inp)
             except Exception: pass
-            self._disarm_quit()
-            return
-        # 3) armed → 退出
-        if self._quit_armed:
-            self.exit()
-            return
-        # 4) 首次按 → 武装并提示
         self._quit_armed = True
         self._refresh_bottombar()
         if self._quit_timer is not None:
@@ -951,7 +966,8 @@ class GenericAgentTUI(App[None]):
         self.notify(f"Fold: {'on' if self.fold_mode else 'off'}", timeout=1)
 
     def action_escape(self) -> None:
-        """Esc 统一入口：choice → palette → help，按优先级 short-circuit。"""
+        """Esc 统一入口：choice → palette → 兜底解除 quit 武装。
+        HelpScreen 自己绑了 Esc 拦截，到这里时它已经被 pop 掉。"""
         # 1) 还有未选定的 choice → 取消
         choice = self._active_choice()
         if choice is not None:
@@ -966,38 +982,15 @@ class GenericAgentTUI(App[None]):
             self._hide_palette()
             self.query_one("#input", InputArea).focus()
             return
-        # 3) 帮助 overlay 打开 → 关闭
-        if self._help_open:
-            self._close_help()
-            return
-        # 4) armed → 解除（on_key 兜底通常已处理；这里仅显式情形）
+        # 3) armed → 解除（on_key 兜底通常已处理；这里仅显式情形）
         self._disarm_quit()
 
     def action_show_help(self) -> None:
-        if self._help_open:
-            self._close_help()
+        # 已经在 HelpScreen 上 → 关掉；否则 push 一个新的（ModalScreen 不影响下层布局，输入框不动）
+        if isinstance(self.screen, HelpScreen):
+            self.pop_screen()
         else:
-            self._open_help()
-
-    def _open_help(self) -> None:
-        try:
-            help_widget = self.query_one("#help", Static)
-        except Exception:
-            return
-        help_widget.update(self._render_help())
-        help_widget.add_class("-visible")
-        self._help_open = True
-
-    def _close_help(self) -> None:
-        try:
-            help_widget = self.query_one("#help", Static)
-        except Exception:
-            self._help_open = False
-            return
-        help_widget.remove_class("-visible")
-        self._help_open = False
-        try: self.query_one("#input", InputArea).focus()
-        except Exception: pass
+            self.push_screen(HelpScreen(self._render_help()))
 
     def _render_help(self) -> Text:
         rows = [
@@ -1216,25 +1209,19 @@ class GenericAgentTUI(App[None]):
         return None
 
     def _cancel_choice(self, msg: ChatMessage) -> None:
-        """← / Esc 取消选择：塌缩成"已取消"行，与 _collapse_choice 对称。"""
-        msg.selected_label = "（已取消）"
-        msg.content = "（已取消）"
-        container = self.query_one("#messages", VerticalScroll)
-        body = Text()
-        body.append("✗ ", style=C_DIM)
-        body.append("已取消", style=C_MUTED)
-        new_widget = SelectableStatic(body, classes="msg")
-        anchor = msg._hint_widget or msg._body_widget
-        if anchor is not None:
-            container.mount(new_widget, after=anchor)
-        else:
-            container.mount(new_widget)
-        if msg._hint_widget is not None:
-            msg._hint_widget.remove()
-            msg._hint_widget = None
-        if msg._body_widget is not None:
-            msg._body_widget.remove()
-        msg._body_widget = new_widget
+        """Esc 取消选择：直接移除整个 choice 消息（role / hint / body 三个 widget），
+        不留"已取消"痕迹。session.messages 同步删掉，下次 _refresh 不会重新挂载。"""
+        for w in (msg._role_widget, msg._hint_widget, msg._body_widget):
+            if w is not None:
+                try: w.remove()
+                except Exception: pass
+        msg._role_widget = None
+        msg._hint_widget = None
+        msg._body_widget = None
+        try:
+            self.current.messages.remove(msg)
+        except (ValueError, RuntimeError):
+            pass
         try:
             self.query_one("#input", InputArea).focus()
         except Exception:
