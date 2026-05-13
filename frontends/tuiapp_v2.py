@@ -735,7 +735,8 @@ class GenericAgentTUI(App[None]):
         self._ids = count(1)
         self._suppress_palette_open = False   # 选中 option 后抑制下一次 on_input_changed 重开 palette
         self.fold_mode: bool = True           # 折叠已完成的 turn，Ctrl+F 切
-        self._last_width: int = -1            # 轮询时检测变化用（Windows 窗口吸附/全屏不发 resize 时的兜底）
+        self._last_size: tuple[int, int] = (-1, -1)  # 同尺寸去重 + tick 兜底（Windows 窗口吸附不发 resize）
+        self._resize_timer = None             # 拖拽 resize 80ms 防抖，避免每帧全量重挂载
 
     def compose(self) -> ComposeResult:
         yield Static("", id="topbar")
@@ -773,9 +774,9 @@ class GenericAgentTUI(App[None]):
     def _tick(self) -> None:
         """0.5s 轮询：刷顶栏时间 + 兜底检测尺寸变化（Windows 窗口吸附/全屏不发 resize）。"""
         self._refresh_topbar()
-        w = self.size.width
-        if w != self._last_width:
-            self._last_width = w
+        size = (self.size.width, self.size.height)
+        if size != self._last_size:
+            self._last_size = size
             self._apply_responsive_layout()
 
     def _patch_auto_scroll_for_selection(self) -> None:
@@ -935,9 +936,21 @@ class GenericAgentTUI(App[None]):
 
     # ---------------- input + palette ----------------
     def on_resize(self, event) -> None:
-        self._apply_responsive_layout()
+        # 终端常对一次拖拽连发多个 resize；同尺寸短路避免重复重挂载。
+        size = (self.size.width, self.size.height)
+        if size == self._last_size:
+            return
+        self._last_size = size
+        # 输入框高度自适应即时跑（对延迟敏感）；布局重挂载走 80ms 防抖。
         try: self._resize_input(self.query_one("#input", InputArea))
         except Exception: pass
+        if self._resize_timer is not None:
+            self._resize_timer.stop()
+        self._resize_timer = self.set_timer(0.08, self._flush_resize)
+
+    def _flush_resize(self) -> None:
+        self._resize_timer = None
+        self._apply_responsive_layout()
 
     def _apply_responsive_layout(self) -> None:
         """按终端宽度调侧栏宽 + 主区横向 padding。<70 列隐藏侧栏，宽屏按比例放大。"""
@@ -947,7 +960,7 @@ class GenericAgentTUI(App[None]):
         except Exception:
             return
         w = self.size.width
-        self._last_width = w
+        self._last_size = (w, self.size.height)
         # 自动隐藏走 -narrow 类，跟用户手动 Ctrl+B 切的 -hidden 互不干扰
         if w < 70:
             sidebar.add_class("-narrow")
@@ -955,7 +968,8 @@ class GenericAgentTUI(App[None]):
             sidebar.remove_class("-narrow")
             sidebar.styles.width = max(30, min(50, w // 5))
         main.styles.padding = (1, 2) if w < 90 else (1, 6)
-        self._remount_current_session()  # 宽度变了 → markdown 要按新宽重渲
+        # padding 改完 layout 是异步重算；推迟到下一帧再读 #messages.content_region 取新宽
+        self.call_after_refresh(self._remount_current_session)
 
     def _remount_current_session(self) -> None:
         if self.current_id is None or not self.is_mounted:
