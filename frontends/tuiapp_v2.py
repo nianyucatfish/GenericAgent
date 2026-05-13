@@ -288,7 +288,6 @@ class InputArea(TextArea):
     def action_clear_input(self) -> None:
         """Ctrl+U: 一键清空整个输入框（无视选区/光标位置），跨平台终端通用。
 
-        与 action_copy_or_clear 的区别：本动作无条件清空，不抢复制行为；
         相当于 readline 的 unix-line-discard，所有主流终端原生透传该键码。
         """
         self.reset()
@@ -457,7 +456,7 @@ class InputArea(TextArea):
             fn = routes.get(event.key)
             if fn:
                 fn(); event.stop(); event.prevent_default(); return
-        # 2) 内嵌 ChoiceList 路由 (ccstatusline 风格)：↑↓ 移动 / → 或 Enter 确认 / ← 或 Esc 取消。
+        # 2) 内嵌 ChoiceList 路由 (ccstatusline 风格)：↑↓ 移动 / → 或 Enter 确认 / Esc 取消。
         #    不依赖焦点转移：只要存在未选定的 ChoiceList，方向键就被借走。
         choice = getattr(self.app, "_active_choice", lambda: None)()
         if choice is not None:
@@ -907,6 +906,16 @@ class GenericAgentTUI(App[None]):
     def action_handle_ctrl_c(self) -> None:
         """Ctrl+C 跨场景统一入口：跑任务时中断；否则首次清空输入框 + 武装退出，
         2s 内再按退出。与 CC 双击退出协议对齐，输入框非空时不会一键退出。"""
+        # 0) 有选区 → 保持终端/TUI 复制语义，不触发 stop / clear / quit。
+        try:
+            selected_text = self.screen.get_selected_text()
+        except Exception:
+            selected_text = None
+        if selected_text:
+            try: self.copy_to_clipboard(selected_text)
+            except Exception: pass
+            self._disarm_quit()
+            return
         # 1) 任务在跑 → 中断（不武装退出，避免误关）
         try: sess = self.current
         except Exception: sess = None
@@ -1411,7 +1420,7 @@ class GenericAgentTUI(App[None]):
             choices.append((f"{mark}[{i}] {name}", i))
         msg = ChatMessage(
             role="system",
-            content="选择模型 (↑/↓ 移动，→/Enter 确认，← 返回输入框)",
+            content="选择模型 (↑/↓ 移动，→/Enter 确认，Esc 取消)",
             kind="choice",
             choices=choices,
             on_select=lambda v: self._do_switch_llm(v),
@@ -1488,7 +1497,7 @@ class GenericAgentTUI(App[None]):
             ]
             msg = ChatMessage(
                 role="system",
-                content="选择导出方式 (↑/↓ 移动，→/Enter 确认，← 返回输入框)",
+                content="选择导出方式 (↑/↓ 移动，→/Enter 确认，Esc 取消)",
                 kind="choice",
                 choices=choices,
                 on_select=lambda v: self._do_export(v),
