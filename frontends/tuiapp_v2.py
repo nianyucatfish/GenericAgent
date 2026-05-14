@@ -825,10 +825,15 @@ class GenericAgentTUI(App[None]):
             scroll_lines = app.SELECT_AUTO_SCROLL_LINES
 
             candidates = [select_widget]
-            if screen._select_start is not None:
-                sw = screen._select_start[0]
-                if sw is not select_widget:
-                    candidates.append(sw)
+            # Textual 8.2.6 把 _select_start 改成了 _select_state (SelectState.start.container)
+            select_state = getattr(screen, "_select_state", None)
+            if select_state is not None:
+                sw = select_state.start.container
+            else:
+                ss = getattr(screen, "_select_start", None)
+                sw = ss[0] if ss is not None else None
+            if sw is not None and sw is not select_widget:
+                candidates.append(sw)
 
             for source in candidates:
                 for ancestor in source.ancestors_with_self:
