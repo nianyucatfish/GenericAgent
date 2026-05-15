@@ -592,12 +592,14 @@ def render_topbar(session_name: str, status: str, model: str, tasks_running: int
     return t
 
 
-def render_bottombar(quit_armed: bool = False) -> Table:
+def render_bottombar(quit_armed: bool = False, rewind_armed: bool = False) -> Table:
     t = Table.grid(expand=True)
     t.add_column(justify="left")
     left = Text()
     if quit_armed:
         left.append("再按 Ctrl+C 退出", style=f"bold {C_GREEN}")
+    elif rewind_armed:
+        left.append("再按 Esc 回退", style=f"bold {C_GREEN}")
     else:
         pairs = [("Enter", "发送"), ("Ctrl+N", "新会话"),
                  ("Ctrl+B", "侧栏"), ("Ctrl+C", "停止/退出"),
@@ -888,6 +890,8 @@ class GenericAgentTUI(App[None]):
         self._resize_timer = None
         self._quit_armed: bool = False
         self._quit_timer = None
+        self._rewind_armed: bool = False
+        self._rewind_timer = None
         self._spinner_frame: int = 0
         self._spinner_timer = None
         self._handlers: dict = {
@@ -1094,10 +1098,22 @@ class GenericAgentTUI(App[None]):
         try: self._refresh_bottombar()
         except Exception: pass
 
+    def _disarm_rewind(self) -> None:
+        if not self._rewind_armed and self._rewind_timer is None:
+            return
+        self._rewind_armed = False
+        if self._rewind_timer is not None:
+            try: self._rewind_timer.stop()
+            except Exception: pass
+            self._rewind_timer = None
+        try: self._refresh_bottombar()
+        except Exception: pass
+
     def on_key(self, event: events.Key) -> None:
-        # Any key other than the quit trigger (Ctrl+C or its Cmd+C alias) disarms.
         if self._quit_armed and event.key not in ("ctrl+c", "cmd+c"):
             self._disarm_quit()
+        if self._rewind_armed and event.key != "escape":
+            self._disarm_rewind()
 
     def action_toggle_sidebar(self) -> None:
         # display:none/block reflow doesn't always settle within one refresh, so
@@ -1131,10 +1147,10 @@ class GenericAgentTUI(App[None]):
         self.notify(f"Fold: {'on' if self.fold_mode else 'off'}", timeout=1)
 
     def action_escape(self) -> None:
-        # Priority chain: pending choice → visible palette → disarm quit.
         choice = self._active_choice()
         if choice is not None:
             self._cancel_choice(choice.msg)
+            self._disarm_rewind()
             return
         try:
             palette = self.query_one("#palette", OptionList)
@@ -1143,8 +1159,21 @@ class GenericAgentTUI(App[None]):
         if palette is not None and palette.has_class("-visible"):
             self._hide_palette()
             self.query_one("#input", InputArea).focus()
+            self._disarm_rewind()
             return
-        self._disarm_quit()
+        if self._quit_armed:
+            self._disarm_quit()
+            return
+        if self._rewind_armed:
+            self._disarm_rewind()
+            self._cmd_rewind([], "")
+            return
+        self._rewind_armed = True
+        self._refresh_bottombar()
+        if self._rewind_timer is not None:
+            try: self._rewind_timer.stop()
+            except Exception: pass
+        self._rewind_timer = self.set_timer(2.0, self._disarm_rewind)
 
     def action_show_help(self) -> None:
         if isinstance(self.screen, HelpScreen):
@@ -1167,6 +1196,7 @@ class GenericAgentTUI(App[None]):
             ("/",                       "唤起命令面板"),
             ("Tab",                     "命令面板可见时补全"),
             ("Esc",                     "取消选择 / 关闭面板 / 关闭帮助"),
+            ("Esc Esc",                 "打开回退选择"),
             ("Ctrl+/",                  "显示 / 隐藏本帮助"),
         ]
         t = Text()
@@ -1934,7 +1964,10 @@ class GenericAgentTUI(App[None]):
     def _refresh_bottombar(self):
         if not self.is_mounted: return
         try:
-            self.query_one("#bottombar", Static).update(render_bottombar(quit_armed=self._quit_armed))
+            self.query_one("#bottombar", Static).update(render_bottombar(
+                quit_armed=self._quit_armed,
+                rewind_armed=self._rewind_armed,
+            ))
         except Exception:
             pass
 
