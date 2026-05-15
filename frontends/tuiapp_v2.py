@@ -56,6 +56,17 @@ _ANSI_CONTROL_RE = re.compile(
 _TURN_MARKER_RE = re.compile(r"^\s*\**LLM Running \(Turn \d+\) \.\.\.\**\s*", re.MULTILINE)
 
 
+def _extract_user_text(entry: dict) -> str:
+    c = entry.get("content") if isinstance(entry, dict) else None
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts = [b.get("text", "") for b in c
+                 if isinstance(b, dict) and b.get("type") == "text"]
+        return "\n".join(p for p in parts if p)
+    return ""
+
+
 def fold_turns(text: str) -> list[dict]:
     placeholders: list[str] = []
     def stash(m):
@@ -768,7 +779,14 @@ class GenericAgentTUI(App[None]):
     #messages {
         height: 1fr;
         background: #0d1117;
-        scrollbar-size: 0 0;
+        /* horizontal hidden, 1-col vertical bar on right. */
+        scrollbar-size: 0 1;
+        scrollbar-background: #0d1117;
+        scrollbar-background-hover: #0d1117;
+        scrollbar-background-active: #0d1117;
+        scrollbar-color: #30363d;
+        scrollbar-color-hover: #484f58;
+        scrollbar-color-active: #6e7681;
     }
 
     .role {
@@ -1391,6 +1409,7 @@ class GenericAgentTUI(App[None]):
         msg.selected_label = display
         msg.content = display
         container = self.query_one("#messages", VerticalScroll)
+        was_at_bottom = self._at_bottom(container)
         body = Text()
         body.append("✓ ", style=C_GREEN)
         body.append(display, style=C_FG)
@@ -1406,6 +1425,8 @@ class GenericAgentTUI(App[None]):
         if msg._body_widget is not None:
             msg._body_widget.remove()
         msg._body_widget = new_widget
+        if was_at_bottom:
+            container.scroll_end(animate=False)
         self.query_one("#input", InputArea).focus()
 
     def _dispatch_command(self, cmd: str, args: list[str], raw: str = "") -> None:
@@ -1482,8 +1503,35 @@ class GenericAgentTUI(App[None]):
         sess = self.current
         if sess.status == "running":
             self._system("Cannot rewind while running. /stop first."); return
-        history = sess.agent.llmclient.backend.history
-        turns = []
+        turns = self._rewindable_turns()
+        if not turns:
+            self._system("No rewindable turns."); return
+        if args:
+            try: n = int(args[0])
+            except ValueError: self._system("Usage: /rewind <n>"); return
+            if n < 1 or n > len(turns):
+                self._system(f"Invalid: 1-{len(turns)}"); return
+            self._system(self._do_rewind(n))
+            return
+        LIMIT = 20
+        recent = list(reversed(turns))[:LIMIT]
+        choices = []
+        for offset, (_, prev) in enumerate(recent, 1):
+            preview = (prev or "（空）").replace("\n", " ").strip()[:60]
+            choices.append((f"回退 {offset} 轮 · {preview}", offset))
+        head = "选择回退到的轮次 (↑/↓ 移动，→/Enter 确认，Esc 取消)"
+        if len(turns) > LIMIT:
+            head += f"  [仅显示最近 {LIMIT}/{len(turns)}]"
+        msg = ChatMessage(
+            role="system", content=head, kind="choice", choices=choices,
+            on_select=lambda v: self._do_rewind(v),
+        )
+        sess.messages.append(msg)
+        self._refresh_messages()
+
+    def _rewindable_turns(self) -> list[tuple[int, str]]:
+        history = self.current.agent.llmclient.backend.history
+        turns: list[tuple[int, str]] = []
         for i, m in enumerate(history):
             if m.get("role") != "user": continue
             c = m.get("content")
@@ -1495,22 +1543,19 @@ class GenericAgentTUI(App[None]):
                 texts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"]
                 if texts and any(t.strip() for t in texts):
                     turns.append((i, texts[0][:60]))
-        if not turns:
-            self._system("No rewindable turns."); return
-        if not args:
-            lines = [f"Rewindable turns ({len(turns)}):"]
-            for offset, (_, prev) in enumerate(reversed(turns[-10:]), 1):
-                lines.append(f"  {offset}) {prev!r}")
-            lines.append("/rewind <n> to undo n turns")
-            self._system("\n".join(lines)); return
-        try: n = int(args[0])
-        except ValueError: self._system("Usage: /rewind <n>"); return
-        if n < 1 or n > len(turns):
-            self._system(f"Invalid: 1-{len(turns)}"); return
+        return turns
+
+    def _do_rewind(self, n: int) -> str:
+        sess = self.current
+        turns = self._rewindable_turns()
+        if not (1 <= n <= len(turns)):
+            return f"❌ 回退失败：n 应在 1-{len(turns)}"
+        history = sess.agent.llmclient.backend.history
         cut = turns[-n][0]
+        prefill = _extract_user_text(history[cut]) if cut < len(history) else ""
         removed = len(history) - cut
         history[:] = history[:cut]
-        real_user = [i for i, m in enumerate(sess.messages) if m.role == "user"]
+        real_user = [i for i, msg in enumerate(sess.messages) if msg.role == "user"]
         if n <= len(real_user):
             sess.messages = sess.messages[:real_user[-n]]
         try: sess.agent.history.append(f"[USER]: /rewind {n}")
@@ -1518,7 +1563,15 @@ class GenericAgentTUI(App[None]):
         self._remount_current_session()
         self._refresh_topbar()
         self._refresh_sidebar()
-        self._system(f"Rewound {n} turn(s). Removed {removed} entries.")
+        if prefill:
+            try:
+                inp = self.query_one("#input", InputArea)
+                inp.text = prefill
+                inp.move_cursor((inp.document.line_count - 1, len(prefill.split("\n")[-1])))
+                inp.focus()
+                self._resize_input(inp)
+            except Exception: pass
+        return f"已回退 {n} 轮（移除 {removed} 条历史）"
 
     def _cmd_clear(self, args, raw):
         self.current.messages.clear()
@@ -1929,8 +1982,10 @@ class GenericAgentTUI(App[None]):
         try:
             from io import StringIO
             from rich.console import Console
+            # Render one column narrower so Rich horizontal rules don't wrap.
+            render_w = max(1, width - 1)
             buf = StringIO()
-            Console(file=buf, width=width, force_terminal=True,
+            Console(file=buf, width=render_w, force_terminal=True,
                     color_system="truecolor", legacy_windows=False
                     ).print(HardBreakMarkdown(text), end="")
             return Text.from_ansi(buf.getvalue().rstrip("\n"))
