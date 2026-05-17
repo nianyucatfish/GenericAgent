@@ -545,7 +545,14 @@ def _align_md_renders(narrow_raw: str, wide_raw: str):
         nt0 = narrow[g_start]
         nt0_lead = len(nt0) - len(nt0.lstrip())
         wide_lead = len(wide_line) - len(wide_line.lstrip())
-        is_centered = (single_line and wide_lead > _CENTER_LEAD_MIN and nt0_lead > 0)
+        # Rich centers H1 against the available width, so wide_lead grows with the
+        # console width (≈ 5000 at width=10000) while nt0_lead reflects narrow's
+        # half-padding. Code lines, list/blockquote markers, etc. have wide_lead
+        # ≈ nt0_lead — without the >=2× guard the heuristic would strip indent
+        # from any code line with ≥5 leading spaces (e.g. `    print("hi")`),
+        # causing the visible selection and the copied text to disagree.
+        is_centered = (single_line and wide_lead > _CENTER_LEAD_MIN and nt0_lead > 0
+                       and wide_lead >= 2 * nt0_lead)
 
         if last_was_content:
             source_parts.append("\n")
