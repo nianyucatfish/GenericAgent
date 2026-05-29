@@ -362,15 +362,12 @@ _I18N: dict[str, dict[str, str]] = {
         'pending.head_running':  'queued {n} · injecting at next turn boundary · Esc to clear',
         'pending.cleared':       'cleared {n} pending message(s)',
         'pending.queued_marker': '[queued] {text}',
-        # Wrap user steers with explicit "finish current task first"
-        # phrasing so the `[MASTER]` envelope (ga.py:578) reads as
-        # supplementary, not as a directive override that drops the
-        # original task.
-        'pending.inject_wrap':   ('The user sent a new message while you '
-                                  'were working:\n{text}\n\nIMPORTANT: After '
-                                  'completing your current task, you MUST '
-                                  'address the user\'s message above. Do '
-                                  'not ignore it.'),
+        # Soft-guidance wrap: treat a mid-task user message as steering input
+        # for the ongoing task, rather than a deferred must-answer queue item.
+        'pending.inject_wrap':   ('User sent a message while you were '
+                                  'working:\n{text}\n'
+                                  'Please take it into consideration and '
+                                  'adjust direction if needed.'),
 
         # shell-mode magic (`!` prefix)
         'shell.hint':           '! for shell mode',
@@ -615,9 +612,8 @@ _I18N: dict[str, dict[str, str]] = {
         'pending.head_running':  '已排队 {n} 条 · 下个 turn 边界注入 · Esc 清空',
         'pending.cleared':       '已清空 {n} 条待发送消息',
         'pending.queued_marker': '[排队] {text}',
-        'pending.inject_wrap':   ('用户在你工作时发来了一条新消息：\n{text}\n\n'
-                                  '重要：完成当前任务后，你必须处理上面的用户消息。'
-                                  '不要忽略它。'),
+        'pending.inject_wrap':   ('用户在你工作时发来了一条新消息：\n{text}\n'
+                                  '请将其纳入考虑，必要时调整方向。'),
 
         # shell-mode magic (`!` prefix)
         'shell.hint':           '! 进入 shell 模式',

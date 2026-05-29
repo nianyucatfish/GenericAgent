@@ -4589,14 +4589,18 @@ class GenericAgentTUI(App[None]):
     # exit-turn boundary consume_file ate the file but next_prompt was
     # discarded — the replay hook re-routes via put_task.
 
+    # Soft-guidance wrap — frame the user's mid-task message as input to fold
+    # into ongoing reasoning, not a deferred queue item. This lets the model
+    # redirect mid-flight if the message warrants it.
     _INTERVENE_WRAP_EN = (
-        "The user sent a new message while you were working:\n{text}\n\n"
-        "IMPORTANT: After completing your current task, you MUST address "
-        "the user's message above. Do not ignore it."
+        "User sent a message while you were working:\n"
+        "{text}\n"
+        "Please take it into consideration and adjust direction if needed."
     )
     _INTERVENE_WRAP_ZH = (
-        "用户在你工作时发来了一条新消息：\n{text}\n\n"
-        "重要：完成当前任务后，你必须处理上面的用户消息。不要忽略它。"
+        "用户在你工作时发来了一条新消息：\n"
+        "{text}\n"
+        "请将其纳入考虑，必要时调整方向。"
     )
 
     def _wrap_user_steer(self, text: str) -> str:
