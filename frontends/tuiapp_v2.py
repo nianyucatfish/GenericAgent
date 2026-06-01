@@ -5825,7 +5825,16 @@ class GenericAgentTUI(App[None]):
                     last_widget.update(rendered)
             else:
                 last_widget._ga_render = None
-                last_widget.update(Text.from_ansi(last_text, style=C_FG))
+                # Normalise CRLF → LF before from_ansi. On Windows child stdout
+                # is `\r\n`; from_ansi treats `\r` as a carriage return, so each
+                # line's text gets overwritten/erased by its own trailing `\r`
+                # and the whole `[Stdout]` block renders as blank lines until the
+                # turn finishes (the done-state Markdown render strips `\r`). We
+                # show the output as-is otherwise — blank-line runs are left for
+                # Markdown to fold on completion. Lone `\r` (no `\n`) is kept so
+                # progress-bar overwrites still work.
+                display = last_text.replace("\r\n", "\n")
+                last_widget.update(Text.from_ansi(display, style=C_FG))
             if m.done and m._spinner_widget is not None:
                 # Convert the live spinner into the post-turn ⠿ card in place.
                 self._capture_done_summary(m)
