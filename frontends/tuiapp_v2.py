@@ -749,6 +749,29 @@ FRONTENDS_DIR = os.path.dirname(os.path.abspath(__file__))
 if FRONTENDS_DIR not in sys.path:
     sys.path.insert(0, FRONTENDS_DIR)
 
+_TASK_DIR_GLOB = os.path.join(FRONTENDS_DIR, '..', 'temp', '_tui_v2_*')
+
+
+def _rmdir_if_empty(path: Optional[str]) -> None:
+    """Best-effort remove a signal task_dir once it holds no in-flight files.
+    `os.rmdir` only succeeds on an empty dir, so a stray `_intervene` still
+    pending consumption is never clobbered."""
+    if not path:
+        return
+    try: os.rmdir(path)
+    except OSError: pass
+
+
+def _sweep_stale_task_dirs() -> None:
+    """Delete empty `temp/_tui_v2_*` signal dirs left by prior runs (incl.
+    crashes).  Empty == no pending signal, so removal is safe even while
+    another live instance owns one — its writer re-creates lazily on the
+    next inject."""
+    import glob as _glob
+    for d in _glob.glob(_TASK_DIR_GLOB):
+        if os.path.isdir(d):
+            _rmdir_if_empty(d)
+
 # Side-effect imports activate /btw + /continue monkey-patches.
 import chatapp_common  # noqa: F401
 from chatapp_common import format_restore
@@ -2760,6 +2783,7 @@ class GenericAgentTUI(App[None]):
         yield Static(render_bottombar(), id="bottombar")
 
     def on_mount(self) -> None:
+        _sweep_stale_task_dirs()  # clear empty signal dirs left by prior runs
         self.add_session("main")
         self._system(f"Welcome to GenericAgent TUI. 按 / 唤起命令面板，{fmt_key('ctrl+n')} 新建会话。")
 
@@ -2861,13 +2885,16 @@ class GenericAgentTUI(App[None]):
         agent = self.agent_factory()
         try: agent.inc_out = True
         except Exception: pass
-        # Per-session task_dir enables ga's `_stop` / `_keyinfo` consume
-        # paths (agentmain.py:158, ga.py:575).  PID+session scoped so
-        # concurrent sessions don't share signal files.
+        # Per-session task_dir path enables ga's `_intervene` / `_keyinfo`
+        # consume paths (ga.py:575).  PID+session scoped so concurrent
+        # sessions don't share signal files.  We only set the *path* here —
+        # the dir is created lazily by the writer (`_session_intervene_path`)
+        # when a signal is actually injected.  Eager makedirs left a stale
+        # empty `temp/_tui_v2_<pid>_<id>` behind for every session that never
+        # used intervene; `consume_file` tolerates a missing dir.
         try:
             agent.task_dir = os.path.join(FRONTENDS_DIR, '..', 'temp',
                                           f'_tui_v2_{os.getpid()}_{agent_id}')
-            os.makedirs(agent.task_dir, exist_ok=True)
         except Exception:
             pass
         sess = AgentSession(agent_id=agent_id, name=name or f"agent-{agent_id}", agent=agent)
@@ -3690,7 +3717,8 @@ class GenericAgentTUI(App[None]):
     def _cmd_close(self, args, raw):
         if len(self.sessions) <= 1:
             self._system("Cannot close the last session."); return
-        del self.sessions[self.current_id]
+        closed = self.sessions.pop(self.current_id)
+        _rmdir_if_empty(getattr(closed.agent, 'task_dir', None))
         self.current_id = next(iter(self.sessions))
         self._refresh_all()
 
@@ -4537,6 +4565,10 @@ class GenericAgentTUI(App[None]):
 
     def on_unmount(self) -> None:
         self._reset_terminal_title()
+        # Drop this run's empty signal dirs on graceful exit; the startup
+        # sweep mops up anything a crash leaves behind.
+        for s in list(self.sessions.values()):
+            _rmdir_if_empty(getattr(s.agent, 'task_dir', None))
 
     def _run_shell(self, cmd: str) -> None:
         """`!cmd` magic: run `cmd` in the user's shell (Git Bash / pwsh /
