@@ -1379,6 +1379,29 @@ class ChoiceList(OptionList):
         except Exception:
             pass
 
+    def on_key(self, event) -> None:
+        # Inside `/continue`'s SearchablePicker, Up on the first row returns
+        # focus to the search box (mirrors Down going search → list), closing
+        # the navigation loop. No-op for ChoiceLists mounted outside a
+        # SearchablePicker (other pickers have no `_search_input` parent), so
+        # this stays scoped to `/continue`.
+        if event.key != "up":
+            return
+        search = getattr(self.parent, "_search_input", None)
+        if search is None:
+            return
+        if self.highlighted not in (None, 0):
+            return
+        try:
+            # Clear the highlight on the way out so the search box doesn't show
+            # row 0 as still-selected, and the next Down re-enters at the first
+            # row (cursor_down from None → 0) instead of skipping to the second.
+            self.highlighted = None
+            search.focus()
+        except Exception:
+            pass
+        event.stop(); event.prevent_default()
+
 
 class LazyChoiceList(ChoiceList):
     """ChoiceList that materializes options in bounded batches.
@@ -1706,14 +1729,30 @@ class SearchableChoiceList(Vertical):
         if not self._search_input.has_focus:
             return
         key = event.key
-        if key in ("down", "up", "pageup", "pagedown", "home", "end"):
+        if key == "up":
+            # Up from the search box wraps around to the BOTTOM of the list, so
+            # the loop is search ↓→ list top ... list top ↑→ search ↑→ list
+            # bottom. Land on the last row directly.
+            try:
+                self.picker.focus()
+                last = getattr(self.picker, "action_last", None)
+                if last is not None:
+                    last()
+                else:
+                    n = getattr(self.picker, "option_count", 0)
+                    if n:
+                        self.picker.highlighted = n - 1
+            except Exception:
+                pass
+            event.stop(); event.prevent_default()
+            return
+        if key in ("down", "pageup", "pagedown", "home", "end"):
             try:
                 self.picker.focus()
                 # Replay one step so the very first arrow doesn't get swallowed
                 # by the focus change. Subsequent arrows go straight to the picker.
                 action = {
                     "down": self.picker.action_cursor_down,
-                    "up": self.picker.action_cursor_up,
                     "pagedown": getattr(self.picker, "action_page_down", None),
                     "pageup": getattr(self.picker, "action_page_up", None),
                     "home": getattr(self.picker, "action_first", None),
@@ -1725,6 +1764,18 @@ class SearchableChoiceList(Vertical):
                 pass
             event.stop(); event.prevent_default()
             return
+        if key == "right":
+            # Right commits the highlight ONLY when the caret is already at the
+            # end of the query — otherwise let the Input consume it so Right
+            # still moves the caret within the search text (the box must stay
+            # editable). Without this guard Right was always swallowed and the
+            # cursor could never move right inside `/continue`'s search box.
+            try:
+                at_end = self._search_input.cursor_position >= len(self._search_input.value or "")
+            except Exception:
+                at_end = True
+            if not at_end:
+                return
         if key in ("enter", "right"):
             try:
                 self.picker.action_select()
